@@ -18,6 +18,7 @@ my_guild=discord.Object(id=1052633446595440741)
 class Bot(commands.Bot):
     def __init__(self) -> None:
         super().__init__(command_prefix = '*', intents=discord.Intents.all(), application_id=1052625943748943942)
+        
 
     async def setup_hook(self) -> None:
         await self.load_extension('commands')

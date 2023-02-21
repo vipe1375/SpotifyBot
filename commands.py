@@ -1,10 +1,10 @@
 import discord 
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord import app_commands
 from discord import Interaction
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
-from discord.ui import View
+from discord.ui import View, button, Button
 import spotipy.util as util
 import datetime
 
@@ -44,6 +44,20 @@ def reload_playlist():
     global playlist
     playlist = spotify.playlist("59ckHwE2dkFjUtjE2wQYzL")
 
+
+def sort_pepites(w_p):
+    l = []
+    
+    while len(l) < 5:
+        maxi = ["str", 0]
+        for i in w_p:
+            if i[1] > maxi[1]:
+                maxi = i
+        l.append(maxi)
+        w_p.remove(maxi)
+
+    return l
+
 class Choose(View):
     def __init__(self, result, type, user, bot, timeout = 0):
         self.user = user
@@ -62,7 +76,7 @@ class Choose(View):
 
 
 class ChooseResult(discord.ui.Select):
-    def __init__(self, result, type, user, bot):
+    def __init__(self, result, type, user, bot: commands.Bot):
         self.user = user
         self.result = result
         self.bot = bot
@@ -228,31 +242,116 @@ class ChooseResult(discord.ui.Select):
             votants_pepites.append(itr.user.id)
             sons_pepites_vote[track['id']] = 0
             await itr.response.edit_message(content = f"Vous avez proposé **{track['name']}** comme Pépite !", embed=None, view=None)
-            await self.pepites_sons_channel.send(f"**{track['name']}**")
+            await self.submit_pepite(itr, track)
         reload_playlist()
+
+
+    async def submit_pepite(self, itr: Interaction, track):
+        embed = discord.Embed(
+            title = f"**{track['name']}** - {track['artists'][0]['name']}",
+            url = track['external_urls']['spotify'],
+            timestamp = datetime.datetime.now())
+        embed.set_thumbnail(url = track['album']['images'][0]['url'])
+        embed.set_footer(text = itr.user.display_name, icon_url = itr.user.avatar.url)
+
+        await self.pepites_sons_channel.send(track['id'], embed=embed, view = Vote([]))
+
+
+
+class VoteView(View):
+    
+    def __init__(self, votants, timeout = 0):
+        super().__init__()
+        self.add_item(Vote(votants))
+
+    async def interaction_check(self, itr: Interaction):
+        if itr.user != self.user:
+            await itr.response.send_message("Ça n'est pas ta commande", ephemeral=True)
+        return itr.user == self.user
+
+    async def on_error(self, itr: Interaction, error, item):
+        print((error, item))
+        await itr.response.send_message((error, item))
+
+
+
+class Vote(View):
+    def __init__(self, votants: list):
+        super().__init__(timeout=None)
+        self.votants = votants
+
+    @button(label = "Votes : 0", emoji='👍')
+    async def vote(self, itr: Interaction, button: Button):
+        if itr.user.id in self.votants:
+            await itr.response.send_message("Tu as déjà voté pour ce son !", ephemeral=True)
+        else:
+            nb_votes = int(button.label[-1])
+            button.label = button.label[:-1] + str(nb_votes+1)
+            await itr.response.edit_message(view = self)
+            self.votants.append(itr.user.id)
+        
+
 
 
 
 class Commands(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
+        
+        #self.get_pepites.start()
+
+
+   
+
+
+    @tasks.loop(minutes = 50)
+    async def get_pepites(self):
+        now = datetime.datetime.now()
+
+        channel = self.bot.get_channel(1060556948052914257)
+        
+        if now.weekday() == 5 and datetime.datetime.hour == 0:
+
+            # récupération des pépites
+            weekly_pepites = []
+            channel = self.bot.get_channel(1060556948052914257)
+            async for message in channel.history(limit=None):
+                weekly_pepites.append([message.content, int(message.components[0].children[0].label[-1])])
+            pepites = sort_pepites()
+
+            # ajout des pépites à la playlist
+            liste_pepites = []
+            for i in pepites:
+                liste_pepites.append(i[0])
+            spotify.playlist_add_items(PLAYLIST_ID, items = liste_pepites)
+
+            # reset du salon
+            await channel.purge()
+
+    @get_pepites.before_loop
+    async def before_some_task(self):
+        await self.bot.wait_until_ready()
        
-    
 
     @app_commands.command(
         name = 'help',
         description = "commande d'aide du bot")
     async def help(self, itr: Interaction):
-        msg = """**COMMANDES**
-        
+        msg = """
+        **COMMANDES DE RECHERCHE :**
         > `search_artist` -> permet d'afficher des informations sur l'artiste recherché
         > `search_song` -> permet d'afficher des informations sur la chanson recherchée
         > `search_album`-> permet d'afficher des informations sur l'album recherché
+
+        **AUTRES COMMANDES :**
+        > `playlist` -> affiche les informations de la playlist Pépites
+        > `pepite` -> permet de proposer une pépite pour la playlist
         """
-        embed = discord.Embed(title = "\u200b", description= msg, timestamp=datetime.datetime.now())
+        embed = discord.Embed(title = "**COMMANDES**", description= msg, timestamp=datetime.datetime.now())
         embed.set_footer(text = itr.user.display_name, icon_url = itr.user.avatar.url)
         
         await itr.response.send_message(embed = embed)
+        
 
 
         
@@ -327,6 +426,7 @@ class Commands(commands.Cog):
         description = 'affiche les informations de la playlist Pépites')
     async def playlist(self, itr: Interaction):
         # Contenu:
+        reload_playlist()
         duration = 0
         for i in playlist['tracks']['items']:
             duration += int(i['track']['duration_ms']/1000)
